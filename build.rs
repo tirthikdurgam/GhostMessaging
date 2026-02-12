@@ -1,5 +1,6 @@
 use winres::WindowsResource;
 
+
 fn main() {
     // Only run this on Windows
     if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
