@@ -104,5 +104,3 @@ GhostTerm is composed of three core layers:
 ---
 
 *GhostTerm is a proof-of-concept for secure, decentralized communication. Use responsibly.*
-
-```
