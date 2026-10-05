@@ -37,9 +37,6 @@ pub enum Wire<'a> {
     /// Diagnostic RTT probe / echo.
     Ping { id: u64 },
     Pong { id: u64 },
-    /// Liveness beacon (every 2 s). Lets us detect crashed / killed peers.
-    Hb,
-    /// Graceful goodbye: tells the other side to terminate its session.
     Bye,
 }
 

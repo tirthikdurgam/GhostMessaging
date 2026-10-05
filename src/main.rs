@@ -35,10 +35,7 @@ use diag::Diag;
 use secure::SecureStore;
 use wire::{Frame as WireFrame, Ticket, Wire, WIRE_VERSION};
 
-const HEARTBEAT: Duration = Duration::from_secs(2);
 const ABOUT_INTERVAL: Duration = Duration::from_secs(3);
-const SILENCE_LIMIT: Duration = Duration::from_secs(6);
-const SILENCE_AFTER_NEIGHBOR_DOWN: Duration = Duration::from_secs(3);
 const KICK_DELAY: Duration = Duration::from_secs(3);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -153,20 +150,7 @@ impl App {
                 }
             }
             Phase::Connected => {
-                let limit = if self.neighbor_down_at.is_some() {
-                    SILENCE_AFTER_NEIGHBOR_DOWN
-                } else {
-                    SILENCE_LIMIT
-                };
-                let silent = self.last_rx.elapsed();
-                if silent > limit {
-                    self.diag
-                        .event(format!("peer silent {} ms -> declared lost", silent.as_millis()));
-                    new_phase = Some(Phase::PeerLeft {
-                        at: Instant::now(),
-                        why: "connection lost".into(),
-                    });
-                }
+
             }
             Phase::PeerLeft { at, why } => {
                 if at.elapsed() >= KICK_DELAY {
@@ -448,19 +432,12 @@ async fn run(
 ) -> ExitReason {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_millis(100));
-    let mut hb = tokio::time::interval(HEARTBEAT);
     let mut about_iv = tokio::time::interval(ABOUT_INTERVAL);
     let mut ping_iv = tokio::time::interval(Duration::from_secs(2));
     let mut path_iv = tokio::time::interval(Duration::from_millis(500));
     let diag_on = app.diag.enabled;
     let mut shutdown = Box::pin(shutdown_signal());
     let mut dirty = true;
-
-    // Client joins before the TUI starts: introduce ourselves right away.
-    if matches!(app.phase, Phase::Connected) {
-        let _ = send_about(&app.name, sender).await;
-        let _ = send_wire(sender, Wire::Hb).await;
-    }
 
     loop {
         if dirty {
@@ -533,12 +510,6 @@ async fn run(
                 if let Some(r) = app.on_tick() { return r; }
             }
 
-            _ = hb.tick() => {
-                if matches!(app.phase, Phase::Connected) {
-                    let _ = send_wire(sender, Wire::Hb).await;
-                }
-            }
-
             _ = about_iv.tick() => {
                 if matches!(app.phase, Phase::Connected) {
                     let _ = send_about(&app.name, sender).await;
@@ -579,20 +550,18 @@ async fn on_gossip(app: &mut App, ev: GEvent, sender: &GossipSender) {
                 app.phase = Phase::Connected;
                 app.last_rx = Instant::now();
                 app.diag.mark("peer_joined");
-                let _ = send_wire(sender, Wire::Hb).await;
                 let _ = send_about(&app.name, sender).await;
             } else if app.peer == Some(id) {
                 app.neighbor_down_at = None;
                 app.diag.event("peer neighbor re-up");
             } else {
-                // Two-party lock: a third node holding the ticket is ignored.
                 app.diag.event(format!("extra neighbor {} ignored", id.fmt_short()));
             }
         }
         GossipEvent::NeighborDown(id) => {
             if app.peer == Some(id) {
-                app.neighbor_down_at = Some(Instant::now());
-                app.diag.event("peer neighbor down");
+                // Neutralized: Do not shorten timeout on transient network switches
+                app.diag.event("peer neighbor down (ignored)");
             }
         }
         GossipEvent::Received(msg) => {
@@ -651,11 +620,13 @@ async fn on_gossip(app: &mut App, ev: GEvent, sender: &GossipSender) {
                     let _ = send_wire(sender, Wire::Pong { id }).await;
                 }
                 Wire::Pong { id } => app.diag.pong(id),
-                Wire::Hb => {}
                 Wire::Bye => {
                     app.diag.event("received Bye");
                     if matches!(app.phase, Phase::Connected | Phase::Connecting) {
-                        app.phase = Phase::PeerLeft { at: Instant::now(), why: "peer exited".into() };
+                        app.phase = Phase::PeerLeft {
+                            at: Instant::now(),
+                            why: "peer exited".into(),
+                        };
                     }
                 }
             }
